@@ -9,7 +9,7 @@
  */
 "use strict";
 
-import assert from 'assert';
+import assert from '../platform/assert-web.js';
 import Type from './type.js';
 
 function getSuggestion(recipe, arc, relevance) {
