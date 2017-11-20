@@ -9,8 +9,8 @@
  */
 "use strict";
 
-var assert = require('assert');
-var Type = require('./type.js');
+import assert from 'assert';
+import Type from './type.js';
 
 function getSuggestion(recipe, arc, relevance) {
   let options = createSuggestionsOptions({arc, relevance});
@@ -303,9 +303,9 @@ class ConnectionDescription extends Description {
   }
 }
 
-Object.assign(module.exports, {
+export default {
   getSuggestion,
   getViewDescription,
   ConnectionDescription,
   ParticleDescription,
-});
+};

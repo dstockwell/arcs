@@ -9,10 +9,10 @@
  */
 "use strict";
 
-const runtime = require("./runtime.js");
-const {ParticleDescription, ConnectionDescription} = require("./description.js");
-const Type = require("./type.js");
-const assert = require("assert");
+import runtime from './runtime.js';
+import {ParticleDescription, ConnectionDescription} from './description.js';
+import Type from './type.js';
+import assert from "assert";
 
 class ConnectionSpec {
   constructor(rawData, typeVarMap) {
@@ -164,4 +164,4 @@ class ParticleSpec {
   }
 }
 
-module.exports = ParticleSpec;
+export default ParticleSpec;
