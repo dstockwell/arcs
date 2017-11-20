@@ -10,9 +10,10 @@
 "use strict";
 
 import runtime from './runtime.js';
-import {ParticleDescription, ConnectionDescription} from './description.js';
+import description from './description.js';
+const {ParticleDescription, ConnectionDescription} = description;
 import Type from './type.js';
-import assert from "assert";
+import assert from '../platform/assert-web.js';
 
 class ConnectionSpec {
   constructor(rawData, typeVarMap) {
