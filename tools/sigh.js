@@ -85,7 +85,7 @@ async function webpack() {
         if (err) {
           reject(err);
         }
-        console.log(stats.toString({colors: true, verbose: true}));
+        console.log(stats.toString('minimal'));
         resolve();
       });
     });
