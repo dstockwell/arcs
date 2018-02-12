@@ -110,7 +110,7 @@ class Schema {
       let fieldType = normative[name] || optional[name];
       switch (fieldType) {
         case undefined:
-          throw new Error(`Can't ${op} field ${name} not in schema ${className}`);
+          throw new Error(`Can't ${op} field '${name}' not in schema '${className}'`);
         case 'Number':
           return [fieldType, 'number'];
         case 'Boolean':

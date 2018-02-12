@@ -6,9 +6,7 @@
 # subject to an additional IP rights grant found at
 # http://polymer.github.io/PATENTS.txt
 
-import 'Thing.manifest'
-
-schema Product extends Thing
+schema Product
   optional
     Text category
     Text seller

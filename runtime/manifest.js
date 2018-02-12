@@ -35,6 +35,7 @@ class Manifest {
     this._id = id;
     this._storageProviderFactory = new StorageProviderFactory(this);
     this._scheduler = scheduler;
+    this._warnings = [];
   }
   get id() {
     return this._id;
@@ -91,6 +92,9 @@ class Manifest {
   }
   findSchemaByName(name) {
     return this._find(manifest => manifest._schemas[name]);
+  }
+  _isLocalSchema(schema) {
+    return Object.values(this._schemas).includes(schema);
   }
   findTypeByName(name) {
     let schema = this.findSchemaByName(name);
@@ -223,6 +227,9 @@ ${e.message}
       for (let item of items.filter(item => item.kind == 'recipe')) {
         await this._processRecipe(manifest, item);
       }
+      for (let warning of manifest._warnings) {
+        console.warn(processError(warning));
+      }
     } catch (e) {
       throw processError(e);
     }
@@ -234,6 +241,12 @@ ${e.message}
       parents: schemaItem.parents.map(parent => {
         let result = manifest.findSchemaByName(parent);
         assert(result);
+        if (!manifest._isLocalSchema(result)) {
+          let error = new Error(`'${parent}' was imported`)
+          error.location = schemaItem.location;
+        // TODO: warn non-local parent.
+          throw error;
+        }
         return result.toLiteral();
       }),
       sections: schemaItem.sections.map(section => {
@@ -261,7 +274,7 @@ ${e.message}
 
     for (let arg of particleItem.args) {
       arg.type = Manifest._processType(arg.type);
-      arg.type = arg.type.resolveReferences(name => manifest.resolveReference(name));
+      arg.type = arg.type.resolveReferences(name => manifest.resolveReference(name, arg));
     }
 
     let particleSpec = new ParticleSpec(particleItem);
@@ -297,7 +310,7 @@ ${e.message}
     for (let arg of shapeItem.interface.args) {
       if (!!arg.type) {
         arg.type = Manifest._processType(arg.type);
-        arg.type = arg.type.resolveReferences(name => manifest.resolveReference(name));
+        arg.type = arg.type.resolveReferences(name => manifest.resolveReference(name, shapeItem));
       }
     }
     let views = shapeItem.interface.args;
@@ -536,9 +549,17 @@ ${e.message}
       }
     }
   }
-  resolveReference(name) {
+  resolveReference(name, item) {
     let schema = this.findSchemaByName(name);
     if (schema) {
+      if (!this._isLocalSchema(schema)) {
+        let error = new Error(`'${name}' was imported`)
+        if (item) {
+          error.location = item.location;
+        }
+        throw error;
+        this._warnings.push(error);
+      }
       return {schema};
     }
     let shape = this.findShapeByName(name);
