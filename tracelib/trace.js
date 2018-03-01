@@ -16,7 +16,7 @@ import fs from '../platform/fs-web.js';
 let events = [];
 let pid;
 let now;
-if (typeof document == 'object') {
+if (typeof process == 'undefined') {
   pid = 42;
   now = function() {
     let t = performance.now();
