@@ -40,8 +40,9 @@ const ArcsUtils = {
   },
   createUrlMap(cdnRoot) {
     // Module import not available in workers yet, we have to use the build for now
-    //const lib = document.URL.includes('debug') ? 'source' : 'build';
-    const lib = 'build';
+    const debug = document.URL.includes('debug');
+    const lib = debug ? 'source' : 'build';
+    let workerEntry = debug ? 'transpile-worker-entry' : 'worker-entry';
     return {
       // TODO(sjmiles): mapping root and dot-root allows browser-loader to replace right-hand
       // side with fully-qualified URL when loading from worker context
@@ -50,7 +51,7 @@ const ArcsUtils = {
       'assets': `${cdnRoot}/assets`,
       'https://$cdn': `${cdnRoot}`,
       // TODO(sjmiles): map must always contain (explicitly, no prefixing) a mapping for `worker-entry.js`
-      'worker-entry.js': `${cdnRoot}/${lib}/worker-entry.js`
+      'worker-entry.js': `${cdnRoot}/${lib}/${workerEntry}.js`
     };
   },
   async makePlans(arc, timeout) {

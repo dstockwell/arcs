@@ -125,8 +125,8 @@ class InnerPEC {
     };
 
     this._apiPort.onStop = () => {
-      if (global.close) {
-        global.close();
+      if (typeof self != 'undefined' && self.close) {
+        self.close();
       }
     };
 
