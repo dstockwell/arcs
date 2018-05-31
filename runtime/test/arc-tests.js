@@ -7,65 +7,144 @@
  * subject to an additional IP rights grant found at
  * http://polymer.github.io/PATENTS.txt
  */
- "use strict";
 
-var runtime = require("../runtime.js");
-var Arc = require("../arc.js");
-let assert = require('chai').assert;
-let particles = require('./test-particles.js');
-const SlotComposer = require('../slot-composer.js');
+import {Arc} from '../arc.js';
+import {assert} from './chai-web.js';
+import {SlotComposer} from '../slot-composer.js';
+import * as util from '../testing/test-util.js';
+import {handleFor} from '../handle.js';
+import {Manifest} from '../manifest.js';
+import {Loader} from '../loader.js';
 
-let view = require('../view.js');
-let util = require('./test-util.js');
-let viewlet = require('../viewlet.js');
+let loader = new Loader();
 
-
-let loader = new (require('../loader'));
-loader.registerParticle(particles.TestParticle);
-const slotComposer = new SlotComposer({});
-const Foo = loader.loadEntity("Foo");
-const Bar = loader.loadEntity("Bar");
+async function setup() {
+  let arc = new Arc({slotComposer, loader, id: 'test'});
+  let manifest = await Manifest.parse(`
+    import 'runtime/test/artifacts/test-particles.manifest'
+    recipe TestRecipe
+      use as handle0
+      use as handle1
+      TestParticle
+        foo <- handle0
+        bar -> handle1
+  `, {loader, fileName: process.cwd() + '/input.manifest'});
+  return {
+    arc,
+    recipe: manifest.recipes[0],
+    Foo: manifest.findSchemaByName('Foo').entityClass(),
+    Bar: manifest.findSchemaByName('Bar').entityClass(),
+  };
+}
+const slotComposer = new SlotComposer({rootContext: 'test', affordance: 'mock'});
 
 describe('Arc', function() {
-
-  it('applies existing runtime to a particle', async () => {
-    let arc = new Arc({loader, slotComposer});
-    let fooView = arc.createView(Foo.type);
-    viewlet.viewletFor(fooView).set(new Foo({value: 'a Foo'}));
-    let barView = arc.createView(Bar.type);
-    var particle = arc.instantiateParticle('TestParticle');
-    arc.connectParticleToView(particle, 'foo', fooView);
-    arc.connectParticleToView(particle, 'bar', barView);
-    await util.assertSingletonHas(barView, Bar, "a Foo1");
+  it('applies existing stores to a particle', async () => {
+    let {arc, recipe, Foo, Bar} = await setup();
+    let fooStore = await arc.createStore(Foo.type, undefined, 'test:1');
+    let barStore = await arc.createStore(Bar.type, undefined, 'test:2');
+    await handleFor(fooStore).set(new Foo({value: 'a Foo'}));
+    recipe.handles[0].mapToStorage(fooStore);
+    recipe.handles[1].mapToStorage(barStore); 
+    assert(recipe.normalize());
+    await arc.instantiate(recipe);
+    await util.assertSingletonWillChangeTo(barStore, Bar, 'a Foo1');
   });
 
-  it('applies new runtime to a particle', async () => {
-    let arc = new Arc({loader, slotComposer});
-    let fooView = arc.createView(Foo.type);
-    let barView = arc.createView(Bar.type);
-    var particle = arc.instantiateParticle('TestParticle');
-    arc.connectParticleToView(particle, 'foo', fooView);
-    arc.connectParticleToView(particle, 'bar', barView);
-    viewlet.viewletFor(fooView).set(new Foo({value: 'a Foo'}));
-    await util.assertSingletonHas(barView, Bar, "a Foo1");
+  it('applies new stores to a particle', async () => {
+    let {arc, recipe, Foo, Bar} = await setup();
+    let fooStore = await arc.createStore(Foo.type, undefined, 'test:1');
+    let barStore = await arc.createStore(Bar.type, undefined, 'test:2');
+    recipe.handles[0].mapToStorage(fooStore);
+    recipe.handles[1].mapToStorage(barStore); 
+    recipe.normalize();
+    await arc.instantiate(recipe);
+
+    handleFor(fooStore).set(new Foo({value: 'a Foo'}));
+    await util.assertSingletonWillChangeTo(barStore, Bar, 'a Foo1');
   });
 
-  it('works with inline particle definitions', async () => {
-    let arc = new Arc({loader, slotComposer});
-    let particleClass = require('../particle').define('P(in Foo foo, out Bar bar)', (views) => {
-      var view = views.get("bar");
-      view.set(new view.entityClass({value: 123}));
-      return 5;
-    });
-
-    let fooView = arc.createView(Foo.type);
-    viewlet.viewletFor(fooView).set(new Foo({value: 1}));
-    let barView = arc.createView(Bar.type);
-    loader.registerParticle(particleClass);
-    let instance = arc.instantiateParticle('P');
-    arc.connectParticleToView(instance, 'foo', fooView);
-    arc.connectParticleToView(instance, 'bar', barView);
-    await util.assertSingletonHas(barView, Bar, 123);
+  it('deserializing a serialized empty arc produces an empty arc', async () => {
+    let arc = new Arc({slotComposer, loader, id: 'test'});
+    let serialization = await arc.serialize();
+    let newArc = await Arc.deserialize({serialization, loader, slotComposer});
+    assert.equal(newArc._storesById.size, 0);
+    assert.equal(newArc.activeRecipe.toString(), arc.activeRecipe.toString());
+    assert.equal(newArc.id.toStringWithoutSessionForTesting(), 'test');
   });
 
+  it('deserializing a simple serialized arc produces that arc', async () => {
+    let {arc, recipe, Foo, Bar} = await setup();
+    let fooStore = await arc.createStore(Foo.type, undefined, 'test:1');
+    handleFor(fooStore).set(new Foo({value: 'a Foo'}));
+    let barStore = await arc.createStore(Bar.type, undefined, 'test:2');
+    recipe.handles[0].mapToStorage(fooStore);
+    recipe.handles[1].mapToStorage(barStore); 
+    recipe.normalize();
+    await arc.instantiate(recipe);
+    await util.assertSingletonWillChangeTo(barStore, Bar, 'a Foo1');
+    assert.equal(fooStore._version, 1);
+    assert.equal(barStore._version, 1);
+
+    let serialization = await arc.serialize();
+    arc.stop();
+
+    let newArc = await Arc.deserialize({serialization, loader, slotComposer});
+    fooStore = newArc.findStoreById(fooStore.id);
+    barStore = newArc.findStoreById(barStore.id);
+    assert.equal(fooStore._version, 1);
+    assert.equal(barStore._version, 1);
+  });
+
+  it('deserializing a serialized arc with a Transformation produces that arc', async () => {
+    let manifest = await Manifest.parse(`
+      import 'shell/artifacts/Common/Multiplexer.manifest'
+      import 'runtime/test/artifacts/test-particles.manifest'
+      
+      recipe
+        slot 'slotid' as slot0
+        use as handle0
+        Multiplexer
+          hostedParticle = ConsumerParticle
+          consume annotation as slot0
+          list <- handle0
+
+    `, {loader, fileName: './manifest.manifest'});
+
+    let recipe = manifest.recipes[0];
+
+    let slotComposer = new SlotComposer({affordance: 'mock', rootContext: 'slotid'});
+
+    let slotComposer_createHostedSlot = slotComposer.createHostedSlot;
+
+    let slotsCreated = 0;
+
+    slotComposer.createHostedSlot = (a, b, c, d) => {
+      slotsCreated++;
+      return slotComposer_createHostedSlot.apply(slotComposer, [a, b, c, d]);
+    };
+
+    let arc = new Arc({id: 'test', context: manifest, slotComposer});
+
+    let barType = manifest.findTypeByName('Bar');
+    let store = await arc.createStore(barType.collectionOf(), undefined, 'test:1');
+    recipe.handles[0].mapToStorage(store);
+    
+    assert(recipe.normalize());
+    assert(recipe.isResolved());
+
+    await arc.instantiate(recipe);
+    await arc.idle;
+
+    let serialization = await arc.serialize();
+    arc.stop();
+
+    let newArc = await Arc.deserialize({serialization, loader, slotComposer, fileName: './manifest.manifest'});
+    await newArc.idle;
+    store = newArc._storesById.get(store.id);
+    await store.store({id: 'a', rawData: {value: 'one'}});
+
+    await newArc.idle;
+    assert.equal(slotsCreated, 1);
+  });
 });

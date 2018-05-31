@@ -7,59 +7,18 @@
  * subject to an additional IP rights grant found at
  * http://polymer.github.io/PATENTS.txt
  */
-"use strict";
+'use strict';
 
-var parser = require("./build/particle-parser.js");
-var runtime = require("./runtime.js");
-//var loader = require("./loader.js");
-var ParticleSpec = require("./particle-spec.js");
-var tracing = require('tracelib');
-var assert = require('assert');
-const typeLiteral = require('./type-literal.js');
+import {Tracing} from '../tracelib/trace.js';
+import {assert} from '../platform/assert-web.js';
 
-const DEBUGGING = false;
-
-function define(def, update) {
-  let spec = new ParticleSpec(parser.parse(def));
-  let clazz = class extends Particle {
-    static get spec() {
-      return spec;
-    }
-    constructor() {
-      super();
-    }
-    setViews(views) {
-      var inputViews = new Map();
-      for (let input of this.inputs()) {
-        this.on(views, input.name, 'change', async e => {
-            this.setBusy();
-            var relevance = await update(views, e);
-            this.setIdle();
-            if (relevance !== undefined)
-              this.relevance = relevance;
-        });
-      }
-    }
-    logDebug(tag, view) {
-      if (!DEBUGGING)
-        return;
-      let direction = this.spec.connectionMap.get(tag).direction;
-      view.debugString().then(v => console.log(
-         `(${this.spec.name})(${direction})(${tag}): (${view.name})`, v));
-    }
-  };
-  Object.defineProperty(clazz, 'name', {
-    value: spec.name,
-  });
-  clazz._isInline = true;
-  clazz._inlineDefinition = def;
-  clazz._inlineUpdateFunction = update;
-  return clazz;
-}
-
-class Particle {
-  constructor() {
-    this.spec = this.constructor.spec.resolve();
+/** @class Particle
+ * A basic particle. For particles that provide UI, you may like to
+ * instead use DOMParticle.
+ */
+export class Particle {
+  constructor(capabilities) {
+    this.spec = this.constructor.spec;
     if (this.spec.inputs.length == 0)
       this.extraData = true;
     this.relevances = [];
@@ -69,11 +28,74 @@ class Particle {
     this.slotHandlers = [];
     this.stateHandlers = new Map();
     this.states = new Map();
+    this._slotByName = new Map();
+    this.capabilities = capabilities || {};
   }
 
-  // Override this to do stuff
+  /** @method setHandles(handles)
+   * This method is invoked with a handle for each store this particle
+   * is registered to interact with, once those handles are ready for
+   * interaction. Override the method to register for events from
+   * the handles.
+   *
+   * Handles is a map from handle names to store handles.
+   */
+  setHandles(handles) {
+  }
+  
+  /** @method setViews(views)
+   * This method is deprecated. Use setHandles instead.
+   */
   setViews(views) {
+  }
 
+  /** @method onHandleSync(handle, model, version)
+   * Called for handles that are configured with both keepSynced and notifySync, when they are
+   * updated with the full model of their data. This will occur once after setHandles() and any time
+   * thereafter if the handle is resynchronized.
+   *
+   * handle: The Handle instance that was updated.
+   * model: For Variable-backed Handles, the Entity data or null if the Variable is not set.
+   *        For Collection-backed Handles, the Array of Entities, which may be empty.
+   * version: The received version number.
+   */
+  onHandleSync(handle, model, version) {
+  }
+
+  /** @method onHandleUpdate(handle, update, version)
+   * Called for handles that are configued with notifyUpdate, when change events are received from
+   * the backing store. For handles also configured with keepSynced these events will be correctly
+   * ordered, with some potential skips if a desync occurs. For handles not configured with
+   * keepSynced, all change events will be passed through as they are received.
+   *
+   * handle: The Handle instance that was updated.
+   * update: An object containing one of the following fields:
+   *    data: The full Entity for a Variable-backed Handle.
+   *    added: An Array of Entities added to a Collection-backed Handle.
+   *    removed: An Array of Entities removed from a Collection-backed Handle.
+   * version: The received version number.
+   */
+  onHandleUpdate(handle, update, version) {
+  }
+
+  /** @method onHandleDesync(handle, version)
+   * Called for handles that are configured with both keepSynced and notifyDesync, when they are
+   * detected as being out-of-date against the backing store. For Variables, the event that triggers
+   * this will also resync the data and thus this call may usually be ignored. For Collections, the
+   * underlying proxy will automatically request a full copy of the stored data to resynchronize.
+   * onHandleSync will be invoked when that is received.
+   *
+   * handle: The Handle instance that was desynchronized.
+   * version: The received version number, which will be more than one ahead of the previously
+   *          stored data.
+   */
+  onHandleDesync(handle, version) {
+  }
+
+  constructInnerArc() {
+    if (!this.capabilities.constructInnerArc)
+      throw new Error('This particle is not allowed to construct inner arcs');
+    return this.capabilities.constructInnerArc(this);
   }
 
   get busy() {
@@ -84,6 +106,10 @@ class Particle {
     return this._idle;
   }
 
+  /** @method setBusy()
+   * Prevents this particle from indicating that it's idle until a matching
+   * call to setIdle is made.
+   */
   setBusy() {
     if (this._busy == 0)
     this._idle = new Promise((resolve, reject) => {
@@ -92,6 +118,9 @@ class Particle {
     this._busy++;
   }
 
+  /** @method setIdle()
+   * Indicates that a busy period (initiated by a call to setBusy) has completed.
+   */
   setIdle() {
     assert(this._busy > 0);
     this._busy--;
@@ -103,10 +132,6 @@ class Particle {
     this.relevances.push(r);
   }
 
-  // Override this to do stuff
-  dataUpdated() {
-  }
-
   inputs() {
     return this.spec.inputs;
   }
@@ -115,50 +140,11 @@ class Particle {
     return this.spec.outputs;
   }
 
-  async requireSlot(id) {
-    if (this.slot) {
-      return this.slot;
-    }
-    if (!this.slotPromise) {
-      this.slotPromise = new Promise((resolve, reject) => {
-        this.slotResolver = resolve;
-        this._slotCallback(id, "Need");
-      });
-    }
-    return this.slotPromise;
-  }
-
-  setSlot(slot) {
-    this.slot = slot;
-    this.slotPromise = null;
-    if (this.slotResolver) {
-      this.slotResolver(this.slot);
-    }
-    this.slotResolver = null;
-    this.slotHandlers.forEach(f => f(true));
-  }
-
-  releaseSlot() {
-    if (this.slot) {
-      this._slotCallback(this.slot.id, "No");
-      this._clearSlot();
-    }
-  }
-
-  // our slot was released involuntarily
-  slotReleased() {
-    this._clearSlot();
-  }
-
-  _clearSlot() {
-    if (this.slot) {
-      this.slot = null;
-      this.slotHandlers.forEach(f => f(false));
-    }
-  }
-
-  setSlotCallback(callback) {
-    this._slotCallback = callback;
+  /** @method getSlot(name)
+   * Returns the slot with provided name.
+   */
+  getSlot(name) {
+    return this._slotByName.get(name);
   }
 
   addSlotHandler(f) {
@@ -179,53 +165,85 @@ class Particle {
     this.stateHandlers.get(state).forEach(f => f(value));
   }
 
-  on(views, names, action, f) {
-    if (typeof names == "string")
+  /** @method on(handles, names, kind, f)
+   * Convenience method for registering a callback on multiple handles at once.
+   *
+   * handles is a map from names to store handles
+   * names indicates the handles which should have a callback installed on them
+   * kind is the kind of event that should be registered for
+   * f is the callback function
+   */
+  on(handles, names, kind, f) {
+    if (typeof names == 'string')
       names = [names];
-    var trace = tracing.start({cat: 'particle', names: this.constructor.name + "::on", args: {view: names, event: action}});
-    names.forEach(name => views.get(name).on(action, tracing.wrap({cat: 'particle', name: this.constructor.name, args: {view: name, event: action}}, f), this));
+    let trace = Tracing.start({cat: 'particle', names: this.constructor.name + '::on', args: {handle: names, event: kind}});
+    names.forEach(name => handles.get(name).on(kind, Tracing.wrap({cat: 'particle', name: this.constructor.name, args: {handle: name, event: kind}}, f), this));
     trace.end();
-  }
-
-  logDebug(tag, view) {
-    if (!DEBUGGING)
-      return;
-    let direction = this.spec.connectionMap.get(tag).direction;
-    view.debugString().then(v => console.log(
-       `(${this.spec.name})(${direction})(${tag}): (${view.name})`, v));
   }
 
   when(changes, f) {
     changes.forEach(change => change.register(this, f));
   }
 
-  fireEvent(event) {
+  fireEvent(slotName, event) {
     // TODO(sjmiles): tests can get here without a `this.slot`, maybe this needs to be fixed in MockSlotManager?
-    assert(this.slot, 'Particle::fireEvent: require a slot for events (this.slot is falsey)');
-    this.slot.fireEvent(event);
+    let slot = this.getSlot(slotName);
+    assert(slot, `Particle::fireEvent: slot ${slotName} is falsey`);
+    slot.fireEvent(event);
+  }
+
+  static buildManifest(strings, ...bits) {
+    let output = [];
+    for (let i = 0; i < bits.length; i++) {
+        let str = strings[i];
+        let indent = / *$/.exec(str)[0];
+        let bitStr;
+        if (typeof bits[i] == 'string')
+          bitStr = bits[i];
+        else
+          bitStr = bits[i].toManifestString();
+        bitStr = bitStr.replace(/(\n)/g, '$1' + indent);
+        output.push(str);
+        output.push(bitStr);
+    }
+    if (strings.length > bits.length)
+      output.push(strings[strings.length - 1]);
+    return output.join('');
+  }
+
+  setParticleDescription(pattern) {
+    return this.setDescriptionPattern('_pattern_', pattern);
+  }
+  setDescriptionPattern(connectionName, pattern) {
+    let descriptions = this.handles.get('descriptions');
+    if (descriptions) {
+      descriptions.store(new descriptions.entityClass({key: connectionName, value: pattern}, connectionName));
+      return true;
+    }
+    return false;
   }
 }
 
-class ViewChanges {
-  constructor(views, names, type) {
-    if (typeof names == "string")
+export class HandleChanges {
+  constructor(handles, names, type) {
+    if (typeof names == 'string')
       names = [names];
     this.names = names;
-    this.views = views;
+    this.handles = handles;
     this.type = type;
   }
   register(particle, f) {
-    var modelCount = 0;
-    var afterAllModels = () => { if (++modelCount == this.names.length) { f(); } };
+    let modelCount = 0;
+    let afterAllModels = () => { if (++modelCount == this.names.length) { f(); } };
 
-    for (var name of this.names) {
-      var view = this.views.get(name);
-      view.synchronize(this.type, afterAllModels, f, particle)
+    for (let name of this.names) {
+      let handle = this.handles.get(name);
+      handle.synchronize(this.type, afterAllModels, f, particle);
     }
   }
 }
 
-class SlotChanges {
+export class SlotChanges {
   constructor() {
   }
   register(particle, f) {
@@ -233,9 +251,9 @@ class SlotChanges {
   }
 }
 
-class StateChanges {
+export class StateChanges {
   constructor(states) {
-    if (typeof states == "string")
+    if (typeof states == 'string')
       states = [states];
     this.states = states;
   }
@@ -244,8 +262,3 @@ class StateChanges {
   }
 }
 
-exports.define = define;
-exports.Particle = Particle;
-exports.ViewChanges = ViewChanges;
-exports.SlotChanges = SlotChanges;
-exports.StateChanges = StateChanges;

@@ -7,174 +7,118 @@
  * subject to an additional IP rights grant found at
  * http://polymer.github.io/PATENTS.txt
  */
-"use strict";
+'use strict';
 
-const assert = require('chai').assert;
-var SlotComposer = require("../slot-composer.js");
-let util = require('./test-util.js');
+import {Arc} from '../arc.js';
+import {assert} from './chai-web.js';
+import {Slot} from '../slot.js';
+import {SlotComposer} from '../slot-composer.js';
+import {Manifest} from '../manifest.js';
+import {Planner} from '../planner.js';
+import {MessageChannel} from '../message-channel.js';
+import {InnerPEC} from '../inner-PEC.js';
+import {StubLoader} from '../testing/stub-loader.js';
+import * as util from '../testing/test-util.js';
 
-let particleSpec = util.initParticleSpec("RootParticle");
-let otherParticleSpec = util.initParticleSpec("OtherParticleSpec");
-let rootSlotid = "root";
-let innerSlotid = "inner";
+class MockSlot extends Slot {
+  constructor(consumeConn, arc) {
+    super(consumeConn, arc);
+    this.content = null;
+  }
+  setContent(content, handler) {
+    this.content = content;
+  }
+}
+
+class MockContext {
+  constructor(context) {
+    this.context = context;
+  }
+  isEqual(other) {
+    return this.context == other.context;
+  }
+}
+
+async function initSlotComposer(recipeStr) {
+  let slotComposer = new SlotComposer({affordance: 'mock', rootContext: new MockContext('dummy-context')});
+  slotComposer._affordance._slotClass = MockSlot;
+
+  let manifest = (await Manifest.parse(recipeStr));
+  let loader = new StubLoader({
+    '*': `defineParticle(({Particle}) => { return class P extends Particle {} });`
+  });
+  const pecFactory = function(id) {
+    const channel = new MessageChannel();
+    new InnerPEC(channel.port1, `${id}:inner`, loader);
+    return channel.port2;
+  };
+  let arc = new Arc({
+    id: 'test-plan-arc',
+    context: manifest,
+    pecFactory,
+    slotComposer,
+  });
+  let startRenderParticles = [];
+  arc.pec.startRender = ({particle, slotName, contentTypes}) => { startRenderParticles.push(particle.name); };
+  let planner = new Planner();
+  planner.init(arc);
+  await planner.strategizer.generate();
+  assert.equal(planner.strategizer.population.length, 1);
+  let plan = planner.strategizer.population[0].result;
+  return {arc, slotComposer, plan, startRenderParticles};
+}
 
 describe('slot composer', function() {
-  it('register and release slots', async () => {
-   let slotComposer = new SlotComposer(/* domRoot= */{}, /* pec= */ {});
+  it('initialize recipe and render slots', async () => {
+    let manifestStr = `
+particle A in 'a.js'
+  consume root
+    provide mySlot
+    provide otherSlot
+particle B in 'b.js'
+  consume mySlot
+particle BB in 'bb.js'
+  consume mySlot
+particle C in 'c.js'
+  consume otherSlot
+recipe
+  slot 'rootslotid-root' as slot0
+  A
+    consume root as slot0
+      provide mySlot as slot1
+      provide otherSlot as slot2
+  B
+    consume mySlot as slot1
+  BB
+    consume mySlot as slot1
+  C
+    consume otherSlot as slot2
+        `;
+    let {arc, slotComposer, plan, startRenderParticles} = await initSlotComposer(manifestStr);
+    plan = plan.clone();
 
-    // successfully register a slot.
-    await slotComposer.registerSlot(particleSpec, rootSlotid, "view");
-    assert.equal(rootSlotid, slotComposer._getSlotId(particleSpec));
-    assert.equal(particleSpec, slotComposer._getParticle(rootSlotid));
+    // "root" slot is always available
+    assert.deepEqual(['root'], slotComposer.getAvailableSlots().map(s => s.name));
 
-    // successfully release slot.
-    slotComposer.releaseSlot(particleSpec);
-    assert.equal(undefined, slotComposer._getSlotId(particleSpec));
-    assert.equal(undefined, slotComposer._getParticle(rootSlotid));
-  });
+    // instantiate the recipe
+    plan.normalize();
+    assert.isTrue(plan.isResolved());
+    assert.equal(arc.pec.slotComposer, slotComposer);
+    await arc.instantiate(plan);
+    assert.deepEqual(['A'], startRenderParticles);
 
-  it('provide pending slot', async () => {
-    let slotComposer = new SlotComposer(/* domRoot= */{}, /* pec= */ {});
+    // render root slot
+    let particle = arc.activeRecipe.particles[0];
+    slotComposer.renderSlot(particle, 'root', 'dummy-content');
+    let rootSlot = slotComposer.getSlot(particle, 'root');
+    assert.equal('dummy-content', rootSlot.content);
 
-    // successfully register a slot.
-    await slotComposer.registerSlot(particleSpec, rootSlotid, "view");
-    // register other particle for the same slot - added pending handler.
-    let otherParticleSpec1 = util.initParticleSpec("OtherParticleSpec1");
-    let pendingPromise1 = slotComposer.registerSlot(otherParticleSpec1, rootSlotid, "view");
-    pendingPromise1.done = false;
-    var verifyPromise = (pendingParticleId) => {
-      // verify released slot was provided to the pending particle.
-      assert.equal(pendingParticleId, slotComposer._getParticle(rootSlotid));
-      assert.equal(undefined, slotComposer._getSlotId(particleSpec));
-      assert.equal(rootSlotid, slotComposer._getSlotId(pendingParticleId));
-    };
-    pendingPromise1.then(() => { verifyPromise(otherParticleSpec1); pendingPromise1.done=true });
+    // update inner slots
+    startRenderParticles.length = 0;
+    rootSlot.getInnerContext = (providedSlotName) => providedSlotName == 'mySlot' ? 'dummy-inner-context' : null;
+    await slotComposer.updateInnerSlots(rootSlot);
+    assert.deepEqual(['B', 'BB'], startRenderParticles);
 
-    let otherParticleSpec2 = util.initParticleSpec("OtherParticleSpec2");
-    let pendingPromise2 = slotComposer.registerSlot(otherParticleSpec2, rootSlotid, "view");
-    pendingPromise2.done = false;
-    pendingPromise2.then(() => { verifyPromise(otherParticleSpec2); pendingPromise2.done=true });
-
-    // verify registered and pending slots.
-    assert.equal(rootSlotid, slotComposer._getSlotId(particleSpec));
-    assert.equal(particleSpec, slotComposer._getParticle(rootSlotid));
-    // verify pending promises are still pending.
-    assert.isFalse(pendingPromise1.done);
-    assert.isFalse(pendingPromise2.done);
-
-    // successfully release slot.
-    slotComposer.releaseSlot(particleSpec);
-
-    // TODO(mmandlis): this test depends on the order the pending slots are provided, it shouldn't.
-    await pendingPromise1;
-    slotComposer.releaseSlot(otherParticleSpec1);
-    await pendingPromise2;
-  });
-
-  it('re-render inner slot', async () => {
-    let slotComposer = new SlotComposer(/* domRoot= */{}, /* pec= */ {});
-    // successfully register and render root slot.
-    await slotComposer.registerSlot(particleSpec, rootSlotid, "view");
-    slotComposer.renderSlot(particleSpec, `Foo<div slotid="${innerSlotid}"></div>`);
-
-    // require inner and render inner slot.
-    await slotComposer.registerSlot(otherParticleSpec, innerSlotid);
-    let innerSlotContent = "Bar";
-    slotComposer.renderSlot(otherParticleSpec, innerSlotContent);
-    assert.equal(innerSlotContent, slotComposer._getSlot(innerSlotid).dom.innerHTML);
-
-    // re-render content of the root slot, and verify the inner slot content is preserved.
-    slotComposer.renderSlot(particleSpec, `Not Foo<div slotid="${innerSlotid}"></div>`);
-    assert.equal(innerSlotContent, slotComposer._getSlot(innerSlotid).dom.innerHTML);
-  });
-
-  it('provide pending inner slot', async () => {
-    let slotComposer = new SlotComposer(/* domRoot= */{}, /* pec= */ {});
-    // require inner slot
-    let innerSlotPromise = slotComposer.registerSlot(otherParticleSpec, innerSlotid);
-
-    // successfully register and render root slot.
-    await slotComposer.registerSlot(particleSpec, rootSlotid, "view");
-    slotComposer.renderSlot(particleSpec, `Foo<div slotid="${innerSlotid}"></div>`);
-
-    await innerSlotPromise;
-  });
-
-  it('release pending inner slot', async () => {
-    let slotComposer = new SlotComposer(/* domRoot= */{}, /* pec= */ {});
-    // require inner slot
-    let innerSlotPromise = slotComposer.registerSlot(otherParticleSpec, innerSlotid);
-    // release particle, while slot request is still pending.
-    slotComposer.releaseSlot(otherParticleSpec);
-    innerSlotPromise.then(function() {
-      assert.fail('slot was released, promise should have been rejected.');
-    }, function() {
-    });
-  });
-
-  it('release inner slot', async () => {
-    let slotComposer = new SlotComposer(/* domRoot= */{}, /* pec= */ {});
-    // Register and render slot
-    await slotComposer.registerSlot(particleSpec, rootSlotid, "view");
-    slotComposer.renderSlot(particleSpec, `Foo<div slotid="${innerSlotid}"></div>`);
-    // require inner slot
-    await slotComposer.registerSlot(otherParticleSpec, innerSlotid);
-    assert.equal(innerSlotid, slotComposer._getSlotId(otherParticleSpec));
-    assert.equal(otherParticleSpec, slotComposer._getParticle(innerSlotid));
-
-    // release root slot and verify inner slot was released too.
-    slotComposer.releaseSlot(particleSpec);
-    assert.equal(undefined, slotComposer._getSlotId(otherParticleSpec));
-    assert.equal(undefined, slotComposer._getParticle(innerSlotid));
-  });
-
-  it('three-level-nested-slots', async () => {
-    let slotComposer = new SlotComposer(/* domRoot= */{}, /* pec= */ {});
-    // Register and render 3 inner slots
-    await slotComposer.registerSlot(particleSpec, rootSlotid, "view");
-    let rootContent = `Foo<div slotid="${innerSlotid}"></div>`;
-    slotComposer.renderSlot(particleSpec, rootContent);
-    await slotComposer.registerSlot(otherParticleSpec, innerSlotid, "view");
-    let subInnerSlotid = "sub";
-    let innerContent = `Bar<div slotid="${subInnerSlotid}"></div>`;
-    slotComposer.renderSlot(otherParticleSpec, innerContent);
-    let subParticleSpec = util.initParticleSpec("SubParticle");
-    await slotComposer.registerSlot(subParticleSpec, subInnerSlotid, "view");
-    let subInnerContent = "Bazzzz";
-    slotComposer.renderSlot(subParticleSpec, subInnerContent);
-
-    // Verify all 3 slots' content and mappings.
-    let rootDom = slotComposer._getSlot(rootSlotid).dom;
-    assert.equal(rootContent, rootDom.innerHTML);
-    let innerDom = slotComposer._getSlot(innerSlotid).dom;
-    assert.equal(innerContent, innerDom.innerHTML);
-    assert.equal(subInnerContent, slotComposer._getSlot(subInnerSlotid).dom.innerHTML);
-
-    // release mid-layer slot.
-    slotComposer.releaseSlot(otherParticleSpec);
-
-    // Verify only root slot content remains
-    assert.equal(rootContent, rootDom.innerHTML);
-    assert.equal('', innerDom.innerHTML);
-    assert.equal(undefined, slotComposer._getSlotId(subParticleSpec));
-    assert.equal(undefined, slotComposer._getParticle(subInnerSlotid));
-  });
-
-  it('register and free slots', async () => {
-   let slotComposer = new SlotComposer(/* domRoot= */{}, /* pec= */ {});
-    // successfully register slot and inner slot.
-    await slotComposer.registerSlot(particleSpec, rootSlotid, "view");
-    slotComposer.renderSlot(particleSpec, `Foo<div slotid="${innerSlotid}"></div>`);
-    await slotComposer.registerSlot(otherParticleSpec, innerSlotid);
-    slotComposer.renderSlot(otherParticleSpec, 'Bar');
-
-    // successfully release root slot.
-    slotComposer.freeSlot(rootSlotid);
-    assert.isTrue(slotComposer.hasSlot(rootSlotid));
-    assert.equal(undefined, slotComposer._getSlotId(particleSpec));
-    assert.equal(undefined, slotComposer._getParticle(rootSlotid));
-    assert.isFalse(slotComposer.hasSlot(innerSlotid));
-    assert.equal(undefined, slotComposer._getSlotId(otherParticleSpec));
-    assert.equal(undefined, slotComposer._getParticle(innerSlotid));
+    assert.deepEqual(['mySlot', 'otherSlot', 'root'], slotComposer.getAvailableSlots().map(s => s.name));
   });
 });

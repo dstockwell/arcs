@@ -7,29 +7,31 @@
  * subject to an additional IP rights grant found at
  * http://polymer.github.io/PATENTS.txt
  */
-"use strict";
+'use strict';
 
-const Loader = require('./loader');
+import {Loader} from './loader.js';
 
-module.exports = class BrowserLoader extends Loader {
+export class BrowserLoader extends Loader {
   constructor(base) {
     super();
-    this._base = base || '';
+    // TODO: Update all callers to pass a valid base URL to avoid the use of
+    //       location here. `new URL(base)` should be valid.
+    this._base = new URL(base || '', self.location).href;
   }
-  loadFile(name) {
-    let xhr = new XMLHttpRequest();
-    xhr.open('GET', this._base + name, false);
-    xhr.send();
-    return xhr.responseText;
+  _resolve(path) {
+    return new URL(path, this._base).href;
   }
-  requireParticle(name) {
-    let filename = this._base + this.particleLocationFor(name, 'js');
+  loadResource(name) {
+    return this._loadURL(this._resolve(name));
+  }
+  async requireParticle(fileName) {
+    fileName = this._resolve(fileName);
     let result = [];
     self.defineParticle = function(particleWrapper) {
       result.push(particleWrapper);
     };
-    importScripts(filename);
+    importScripts(fileName);
     delete self.defineParticle;
     return this.unwrapParticle(result[0]);
   }
-};
+}

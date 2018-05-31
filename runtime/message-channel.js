@@ -7,7 +7,7 @@
  * subject to an additional IP rights grant found at
  * http://polymer.github.io/PATENTS.txt
  */
-"use strict";
+'use strict';
 
 class MessagePort {
   constructor(channel, id, other) {
@@ -24,6 +24,10 @@ class MessagePort {
   set onmessage(f) {
     this._onmessage = f;
   }
+
+  close() {
+    this.postMessage = function() {};
+  }
 }
 
 class MessageEvent {
@@ -32,21 +36,23 @@ class MessageEvent {
   }
 }
 
-class MessageChannel {
+export class MessageChannel {
   constructor() {
     this.port1 = new MessagePort(this, 0, 1);
     this.port2 = new MessagePort(this, 1, 0);
     this._ports = [this.port1, this.port2];
   }
 
-  _post(id, message) {
+  async _post(id, message) {
     message = JSON.parse(JSON.stringify(message));
-    Promise.resolve().then(() => {
-      if (this._ports[id]._onmessage) {
-        this._ports[id]._onmessage(new MessageEvent(message));
+    if (this._ports[id]._onmessage) {
+      try {
+        // Yield so that we deliver the message asynchronously.
+        await 0;
+        await this._ports[id]._onmessage(new MessageEvent(message));
+      } catch (e) {
+        console.error('Exception in particle code\n', e);
       }
-    });
+    }
   }
 }
-
-module.exports = MessageChannel;

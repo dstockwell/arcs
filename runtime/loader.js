@@ -7,84 +7,75 @@
  * subject to an additional IP rights grant found at
  * http://polymer.github.io/PATENTS.txt
  */
-"use strict";
+import {fs} from '../platform/fs-web.js';
+import {vm} from '../platform/vm-web.js';
+import {fetch} from './fetch-web.js';
 
-var parser = require("./build/particle-parser.js");
-const schemaParser = require("./build/schema-parser.js");
-var fs = require("fs");
-var recipe = require("./recipe.js");
-var runtime = require("./runtime.js");
-var assert = require("assert");
-var ParticleSpec = require("./particle-spec.js");
-const Schema = require("./schema.js");
-const particle = require("./particle.js");
-const DomParticle = require("./dom-particle.js");
-const vm = require('vm');
+import {assert} from '../platform/assert-web.js';
+import {Particle} from './particle.js';
+import {DomParticle} from './dom-particle.js';
+import {MultiplexerDomParticle} from './multiplexer-dom-particle.js';
+import {TransformationDomParticle} from './transformation-dom-particle.js';
+import {JsonldToManifest} from './converters/jsonldToManifest.js';
+const html = (strings, ...values) => (strings[0] + values.map((v, i) => v + strings[i + 1]).join('')).trim();
 
 function schemaLocationFor(name) {
   return `../entities/${name}.schema`;
 }
 
-class Loader {
-  constructor() {
-    this._particlesByName = {};
+export class Loader {
+  path(fileName) {
+    let path = fileName.replace(/[\/][^\/]+$/, '/');
+    return path;
   }
 
-  particleLocationFor(name, type) {
-    return `../particles/${name}/${name}.${type}`;
+  join(prefix, path) {
+    if (/^https?:\/\//.test(path))
+      return path;
+    // TODO: replace this with something that isn't hacky
+    if (path[0] == '/' || path[1] == ':')
+      return path;
+    prefix = this.path(prefix);
+    return prefix + path;
   }
 
-  loadFile(file) {
-    return fs.readFileSync(file, "utf-8");
+  loadResource(file) {
+    if (/^https?:\/\//.test(file))
+      return this._loadURL(file);
+    return this._loadFile(file);
   }
 
-  loadSchema(name) {
-    let data = this.loadFile(schemaLocationFor(name));
-    var parsed = schemaParser.parse(data);
-    if (parsed.parent) {
-      var parent = this.loadSchema(parsed.parent);
-    } else {
-      var parent = undefined;
+  _loadFile(file) {
+    return new Promise((resolve, reject) => {
+      fs.readFile(file, (err, data) => {
+        if (err)
+          reject(err);
+        else
+          resolve(data.toString('utf-8'));
+      });
+    });
+  }
+
+  _loadURL(url) {
+    if (/\/\/schema.org\//.test(url)) {
+      if (url.endsWith('/Thing')) {
+        return fetch('https://schema.org/Product.jsonld').then(res => res.text()).then(data => JsonldToManifest.convert(data, {'@id': 'schema:Thing'}));
+      }
+      return fetch(url + '.jsonld').then(res => res.text()).then(data => JsonldToManifest.convert(data));
     }
-    return new Schema(parsed, parent);
+    return fetch(url).then(res => res.text());
   }
 
-  loadEntity(name) {
-    return this.loadSchema(name).entityClass();
-  }
-
-  registerParticle(particleClass) {
-    assert(particleClass instanceof Function);
-    if (this._particlesByName[particleClass.name])
-      console.warn(`${particleClass.name} is already registered`);
-    this._particlesByName[particleClass.name] = particleClass;
-  }
-
-  loadParticleSpec(name) {
-    if (this._particlesByName[name])
-      return this._particlesByName[name].spec;
-    let data = this.loadFile(this.particleLocationFor(name, 'ptcl'));
-    return new ParticleSpec(parser.parse(data));
-  }
-
-  // TODO: onlyRegisteredScript is a hack for inline particles. remove it.
-  loadParticle(name, onlyRegisteredScript) {
-    let particleClass = this._particlesByName[name];
-    if (particleClass) {
-      return particleClass;
-    }
-
-    let clazz = onlyRegisteredScript ? {name} : this.requireParticle(name);
-    clazz.spec = this.loadParticleSpec(name);
-    this._particlesByName[name] = clazz;
+  async loadParticleClass(spec) {
+    let clazz = await this.requireParticle(spec.implFile);
+    clazz.spec = spec;
     return clazz;
   }
 
-  requireParticle(name) {
-    let filename = this.particleLocationFor(name, 'js');
-    let src = this.loadFile(filename);
+  async requireParticle(fileName) {
+    let src = await this.loadResource(fileName);
     // Note. This is not real isolation.
-    let script = new vm.Script(src, {filename});
+    let script = new vm.Script(src, {filename: fileName, displayErrors: true});
     let result = [];
     let self = {
       defineParticle(particleWrapper) {
@@ -93,14 +84,13 @@ class Loader {
       console,
       importScripts: s => null //console.log(`(skipping browser-space import for [${s}])`)
     };
-    script.runInNewContext(self);
+    script.runInNewContext(self, {filename: fileName, displayErrors: true});
+    assert(result.length > 0 && typeof result[0] == 'function', `Error while instantiating particle implementation from ${fileName}`);
     return this.unwrapParticle(result[0]);
   }
 
   unwrapParticle(particleWrapper) {
-    return particleWrapper({particle, Particle: particle.Particle, DomParticle});
+    return particleWrapper({Particle, DomParticle, TransformationDomParticle, MultiplexerDomParticle, html});
   }
 
 }
-
-module.exports = Loader;

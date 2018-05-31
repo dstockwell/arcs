@@ -1,0 +1,25 @@
+{
+  "name" : "Arcs Explorer",
+  "version" : "0.1",
+  "description" : "Helps debug Arcs particles.",
+  "devtools_page": "src/devtools.html",
+  "background" : {
+    "scripts": ["src/background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/contentScript.js"],
+      "css": ["src/inject.css"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "permissions": ["<all_urls>", "activeTab", "webNavigation"],
+  "web_accessible_resources" : [
+    "shared/arc-registry.js",
+    "src/run-init-debug.js",
+    "img/*.png"
+  ],
+  "manifest_version": 2
+}

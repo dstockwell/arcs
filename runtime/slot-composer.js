@@ -7,149 +7,193 @@
  * subject to an additional IP rights grant found at
  * http://polymer.github.io/PATENTS.txt
  */
-"use strict";
 
-const assert = require('assert');
-const Slot = require('./dom-slot.js');
+import {assert} from '../platform/assert-web.js';
+import {Affordance} from './affordance.js';
 
-let log = !global.document || (global.logging === false) ? () => {} : console.log.bind(console, '---------- SlotComposer::');
+export class SlotComposer {
+  /**
+   * |options| must contain:
+   * - affordance: the UI affordance the slots composer render to (for example: dom).
+   * - rootContext: the context containing top level context to be used for slots.
+   * and may contain:
+   * - containerKind: the type of container wrapping each slot's context (for example, div).
+   */
+  constructor(options) {
+    assert(options.affordance, 'Affordance is mandatory');
+    assert(options.rootContext, 'Root context is mandatory');
 
-class SlotComposer {
-  constructor(domRoot) {
-    this._slotBySlotId = new Map();
-    // Contains both fulfilled slots and pending requests.
-    this._slotIdByParticleSpec = new Map();
-    this._createSlot('root').initialize(domRoot, /* exposedView= */ undefined);
+    this._containerKind = options.containerKind;
+    this._affordance = Affordance.forName(options.affordance);
+    assert(this._affordance.slotClass);
+
+    let slotContextByName = this._affordance.slotClass.findRootSlots(options.rootContext) || {};
+    if (Object.keys(slotContextByName).length == 0) {
+      // fallback to single 'root' slot using the rootContext.
+      slotContextByName['root'] = options.rootContext;
+    }
+
+    this._contextSlots = [];
+    Object.keys(slotContextByName).forEach(slotName => {
+      this._contextSlots.push({id: `rootslotid-${slotName}`, name: slotName, tags: [`${slotName}`], context: slotContextByName[slotName], handleConnections: [], handles: 0, getProvidedSlotSpec: () => { return {isSet: false}; }});
+    });
+
+    this._slots = [];
   }
-  _createSlot(slotid) {
-    let slot = new Slot(slotid);
-    this._slotBySlotId.set(slotid, slot);
-    return slot;
+
+  get affordance() { return this._affordance.name; }
+
+  getSlot(particle, slotName) {
+    return this._slots.find(s => s.consumeConn.particle == particle && s.consumeConn.name == slotName);
   }
-  getSlot(slotid) {
-    return this._slotBySlotId.get(slotid);
+
+  _findContext(slotId) {
+    let contextSlot = this._contextSlots.find(slot => slot.id == slotId);
+    if (contextSlot) {
+      return contextSlot.context;
+    }
   }
-  // TODO(sjmiles): is this necessary?
-  hasSlot(slotid) {
-    return Boolean(this.getSlot(slotid));
+
+  createHostedSlot(transformationParticle, transformationSlotName, hostedParticleName, hostedSlotName) {
+    let hostedSlotId = this.arc.generateID();
+
+    let transformationSlot = this.getSlot(transformationParticle, transformationSlotName);
+    assert(transformationSlot,
+           `Unexpected transformation slot particle ${transformationParticle.name}:${transformationSlotName}, hosted particle ${hostedParticleName}, slot name ${hostedSlotName}`);
+    transformationSlot.addHostedSlot(hostedSlotId, hostedParticleName, hostedSlotName);
+    return hostedSlotId;
   }
-  _getOrCreateSlot(slotid) {
-    return this.getSlot(slotid) || this._createSlot(slotid);
+  _findSlotByHostedSlotId(hostedSlotId) {
+    for (let slot of this._slots) {
+      let hostedSlot = slot.getHostedSlot(hostedSlotId);
+      if (hostedSlot) {
+        return slot;
+      }
+    }
   }
-  // TODO(sjmiles): this is a _request_ for a slot, it's mapped to `GetSlot` message
-  registerSlot(particleSpec, slotid) {
-    log(`registerSlot("${particleSpec.particle.name}", "${slotid}")`);
-    return new Promise((resolve, reject) => {
-      try {
-        let slot = this._getOrCreateSlot(slotid);
-        this._slotIdByParticleSpec.set(particleSpec, slotid);
-        if (slot.isAvailable()) {
-          resolve(slot);
-        } else {
-          slot.addPendingRequest(particleSpec, resolve, reject);
+  findHostedSlot(hostedParticle, hostedSlotName) {
+    for (let slot of this._slots) {
+      let hostedSlot = slot.findHostedSlot(hostedParticle, hostedSlotName);
+      if (hostedSlot) {
+        return hostedSlot;
+      }
+    }
+  }
+
+  initializeRecipe(recipeParticles) {
+    let newSlots = [];
+    // Create slots for each of the recipe's particles slot connections.
+    recipeParticles.forEach(p => {
+      Object.values(p.consumedSlotConnections).forEach(cs => {
+        if (!cs.targetSlot) {
+          assert(!cs.slotSpec.isRequired, `No target slot for particle's ${p.name} required consumed slot: ${cs.name}.`);
+          return;
         }
-      } catch(x) {
-        // TODO(sjmiles): my Promise-fu is not strong, probably should do something else
-        reject(x);
-      }
-    }).then(slot => {
-      this._assignSlot(slotid, slot, particleSpec);
+
+        if (this._initHostedSlot(cs.targetSlot.id, p)) {
+          // Skip slot creation for hosted slots.
+          return;
+        }
+
+        let slot = new this._affordance.slotClass(cs, this.arc, this._containerKind);
+        slot.startRenderCallback = this.arc.pec.startRender.bind(this.arc.pec);
+        slot.stopRenderCallback = this.arc.pec.stopRender.bind(this.arc.pec);
+        slot.innerSlotsUpdateCallback = this.updateInnerSlots.bind(this);
+        newSlots.push(slot);
+      });
     });
-  }
-  _assignSlot(slotid, slot, particleSpec) {
-    log(`_assignSlot("${slotid}")`);
-    slot.associateWithParticle(particleSpec);
-  }
-  _getSlotId(particleSpec) {
-    return this._slotIdByParticleSpec.get(particleSpec);
-  }
-  _getParticle(slotid) {
-    if (this._slotBySlotId.has(slotid)) {
-      return this._slotBySlotId.get(slotid)._particleSpec;
-    }
-  }
-  _getSlot(slotid) {
-    assert(this._slotBySlotId.has(slotid));
-    return this._slotBySlotId.get(slotid);
-  }
-  _getParticleSlot(particleSpec) {
-    return this._getSlot(this._getSlotId(particleSpec));
-  }
-  // TODO(sjmiles): should be `renderParticle`?
-  renderSlot(particleSpec, content, handler) {
-    let slot = this._getParticleSlot(particleSpec);
-    // returns slot(id)s rendered by the particle
-    let innerSlotInfos = slot.render(content, handler);
-    if (innerSlotInfos && innerSlotInfos.length > 0) {
-      // the `innerSlotInfos` identify available slot-contexts, make them available for composition
-      this._provideInnerSlots(innerSlotInfos, particleSpec);
-    }
-  }
-  _provideInnerSlots(innerSlotInfos, particleSpec) {
-    //log(`SlotManager::_provideInnerSlots: [${innerSlotInfos.map(info=>info.id).join(',')}]`);
-    innerSlotInfos.forEach(info => {
-      let inner = this._getOrCreateSlot(info.id);
-      if (inner.isInitialized()) {
-        //log(`SlotManager::_provideInnerSlots: slot [${info.id}] is already provisioned`)
-      } else {
-        //log(`SlotManager::_provideInnerSlots: provisioning slot [${info.id}]`);
-        inner.initialize(info.context, particleSpec.exposeMap.get(info.id));
+
+    // Attempt to set context for each of the slots.
+    newSlots.forEach(s => {
+      assert(!s.getContext(), `Unexpected context in new slot`);
+
+      let context = null;
+      let sourceConnection = s.consumeConn.targetSlot && s.consumeConn.targetSlot.sourceConnection;
+      if (sourceConnection) {
+        let sourceConnSlot = this.getSlot(sourceConnection.particle, sourceConnection.name);
+        if (sourceConnSlot) {
+          context = sourceConnSlot.getInnerContext(s.consumeConn.name);
+        }
+      } else { // External slots provided at SlotComposer ctor (eg 'root')
+        context = this._findContext(s.consumeConn.targetSlot.id);
       }
-      if (!inner.isAssociated()) {
-        //log(`SlotManager::_provideInnerSlots: providing slot [${info.id}]`);
-        inner.providePendingSlot();
+
+      this._slots.push(s);
+
+      if (context) {
+        s.updateContext(context);
       }
     });
   }
-  // particleSpec is relinquishing ownership of it's slot
-  releaseSlot(particleSpec) {
-    let slotid = this._getSlotId(particleSpec);
-    if (slotid) {
-      let slot = this._getSlot(slotid);
-      // particleSpec is mapped to slotid, hence it is either associated or pending.
-      if (slot.particleSpec == particleSpec) {
-        this._disassociateSlotFromParticle(slot);
-        return this._releaseSlot(slotid);
-      } else {
-        slot.removePendingRequest(particleSpec);
+
+  _initHostedSlot(hostedSlotId, hostedParticle) {
+    let transformationSlot = this._findSlotByHostedSlotId(hostedSlotId);
+    if (!transformationSlot) {
+      return false;
+    }
+    transformationSlot.initHostedSlot(hostedSlotId, hostedParticle);
+    return true;
+  }
+
+  async renderSlot(particle, slotName, content) {
+    let slot = this.getSlot(particle, slotName);
+    if (slot) {
+      // Set the slot's new content.
+      await slot.setContent(content, eventlet => {
+        this.arc.pec.sendEvent(particle, slotName, eventlet);
+      });
+      return;
+    }
+
+    if (this._renderHostedSlot(particle, slotName, content)) {
+      return;
+    }
+
+    assert(slot, `Cannot find slot (or hosted slot) ${slotName} for particle ${particle.name}`);
+  }
+
+  _renderHostedSlot(particle, slotName, content) {
+    let hostedSlot = this.findHostedSlot(particle, slotName);
+    if (!hostedSlot) {
+      return false;
+    }
+    let transformationSlot = this._findSlotByHostedSlotId(hostedSlot.slotId);
+    assert(transformationSlot, `No transformation slot found for ${hostedSlot.slotId}`);
+
+    this.arc.pec.innerArcRender(transformationSlot.consumeConn.particle, transformationSlot.consumeConn.name, hostedSlot.slotId,
+      transformationSlot.formatHostedContent(hostedSlot, content));
+
+    return true;
+  }
+
+  updateInnerSlots(slot) {
+    assert(slot, 'Cannot update inner slots of null');
+    // Update provided slot contexts.
+    Object.keys(slot.consumeConn.providedSlots).forEach(providedSlotName => {
+      let providedContext = slot.getInnerContext(providedSlotName);
+      let providedSlot = slot.consumeConn.providedSlots[providedSlotName];
+      providedSlot.consumeConnections.forEach(cc => {
+        // This will trigger 'start' or 'stop' render, if applicable.
+        this.getSlot(cc.particle, cc.name).updateContext(providedContext);
+      });
+    });
+  }
+
+  getAvailableSlots() {
+    let availableSlots = this.arc.activeRecipe.slots.slice();
+
+    this._contextSlots.forEach(contextSlot => {
+      if (!availableSlots.find(s => s.id == contextSlot.id)) {
+        availableSlots.push(contextSlot);
       }
-    }
+    });
+    return availableSlots;
   }
-  _releaseSlot(slotid) {
-    let slot = this._getSlot(slotid);
-    // teardown rendering, retrieve info on lost slots
-    let lostInfos = slot.derender();
-    // acquire list of particles who lost slots
-    let affectedParticles = lostInfos.map(s => this._getParticle(s.id));
-    // remove lost slots
-    lostInfos.forEach(s => this._removeSlot(this._getSlot(s.id)));
-    log(`_releaseSlotId("${slotid}"):`, affectedParticles);
-    // released slot is now available for another requester
-    slot.providePendingSlot();
-    // return list of particles who lost slots
-    return affectedParticles;
-  }
-  // Force free slot contents and particles associated to free up the slot for user accepted suggestion.
-  freeSlot(slotid) {
-    let slot = this._getSlot(slotid);
-    if (slot.isAssociated()) {
-      this._disassociateSlotFromParticle(slot);
-      slot._pendingRequests.clear();
-      this._releaseSlot(slotid);
-    }
-  }
-  _disassociateSlotFromParticle(slot) {
-    this._slotIdByParticleSpec.delete(slot.particleSpec);
-    slot.disassociateParticle();
-  }
-  // `remove` means to evacipate the slot context (`release` otoh means only to mark the slot as unused)
-  _removeSlot(slot) {
-    if (slot.isAssociated()) {
-      this._disassociateSlotFromParticle(slot);
-    }
-    slot.uninitialize();
-    this._slotBySlotId.delete(slot.slotid);
+
+  dispose() {
+    this._slots.forEach(slot => slot.dispose());
+    this._slots.forEach(slot => slot.setContext(null));
+    this._affordance.contextClass.dispose();
+    this._contextSlots.forEach(contextSlot => this._affordance.contextClass.clear(contextSlot));
   }
 }
-
-module.exports = SlotComposer;

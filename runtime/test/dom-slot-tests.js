@@ -7,86 +7,127 @@
  * subject to an additional IP rights grant found at
  * http://polymer.github.io/PATENTS.txt
  */
-"use strict";
+'use strict';
 
-const assert = require('chai').assert;
-var DomSlot = require("../dom-slot.js");
-let util = require('./test-util.js');
-let loader = new (require('../loader'));
-const Bar = loader.loadEntity("Bar");
-const view = require('../view.js');
+import {assert} from './chai-web.js';
+import * as util from '../testing/test-util.js';
+import {MockDomSlot, MockDomContext} from '../testing/mock-dom-slot.js';
+
+function createDomSlot() {
+  return new MockDomSlot(/* consumeConn= */ {particle: {name: 'MyParticle', connections: []}, slotSpec: {}, name: 'slotName'}, 'dummy-arc');
+}
 
 describe('dom-slot', function() {
-  it('initialize render derender and uninitialize', function() {
-    let slot = new DomSlot('slotid');
-    assert.isFalse(slot.isInitialized());
-    assert.equal(undefined, slot.content);
+  it('set context', function() {
+    let slot = createDomSlot();
+    let doRenderCount = 0;
+    slot._doRender = () => { ++doRenderCount; };
+    assert.isNull(slot._context);
 
-    // initialize DOM.
-    slot.initialize(/* context= */{}, /* exposedView= */undefined);
-    assert.isTrue(slot.isInitialized());
-    assert.equal(undefined, slot.content);
+    // context was null; set to null - nothing happens.
+    slot.setContext(null);
+    assert.isNull(slot._context);
 
-    // render content.
-    let content = 'foo';
-    assert.deepEqual([], slot.render(content, /* eventHandler= */undefined));
-    assert.isTrue(slot.isInitialized());
-    assert.equal(content, slot.dom._cachedContent);
+    // context was null; set none null - initializes DOM context
+    slot.setContext('dummy-context');
+    assert.isTrue(slot.getContext() instanceof MockDomContext);
+    let clearCount = 0;
+    slot.getContext().clear = () => { clearCount++; };
+    assert.equal('dummy-context', slot.getContext().context);
+    assert.equal(0, doRenderCount);
 
-    // render content with inner slots.
-    content = 'foo<div slotid="action"></div>bar<div slotid="other"></div>';
-    let innerSlotInfos = slot.render(content, /* eventHandler= */undefined);
-    assert.equal(2, innerSlotInfos.length);
-    assert.equal('action', innerSlotInfos[0].id);
-    assert.equal('other', innerSlotInfos[1].id);
-    assert.isTrue(slot.isInitialized());
-    assert.equal(content, slot.dom._cachedContent);
+    // context was NOT null; set none null - updates DOM context, and calls doRender
+    slot.setContext('other-dummy-context');
+    assert.equal(1, clearCount);
+    assert.equal(1, doRenderCount);
+    assert.equal('other-dummy-context', slot.getContext().context);
 
-    // derender content.
-    slot.derender();
-    assert.isTrue(slot.isInitialized());
-    assert.equal('', slot.dom._cachedContent);
-
-    // uninitialize DOM.
-    slot.uninitialize();
-    assert.isFalse(slot.isInitialized());
-    assert.isNull(slot.dom);
+    // set context to NULL.
+    slot.setContext(null);
+    assert.equal(1, doRenderCount);
+    assert.isNull(slot._context);
   });
+  it('set content', async () => {
+    let slot = createDomSlot();
+    let doRenderCount = 0;
+    let _doRenderImpl = slot._doRender;
+    slot._doRender = () => {
+      ++doRenderCount;
+      _doRenderImpl.call(slot);
+    };
+    slot.populateHandleDescriptions = async () => {};
+    assert.isNull(slot._model);
 
-  it('check availability', function() {
-    let slot = new DomSlot('slotid');
-    // Slot isn't initialized.
-    assert.isFalse(slot.isAvailable());
+    // model and context are null; set content to null - nothing happens.
+    await slot.setContent(null);
+    assert.isNull(slot._model);
+    assert.equal(0, doRenderCount);
 
-    // Slot is initialized and not associated with a Particle.
-    slot.initialize(/* context= */{}, /* exposedView= */undefined);
-    assert.isTrue(slot.isAvailable());
+    // set content to non-NULL - still nothing happens, because context is null.
+    await slot.setContent({content: 'foo'});
+    assert.isNull(slot._model);
+    assert.equal(0, doRenderCount);
 
-    // Slot is associated with a Particle.
-    slot.associateWithParticle(util.initParticleSpec('particle'));
-    assert.isFalse(slot.isAvailable());
+    // set context to dummy
+    await slot.setContext('dummy-context');
+    let clearCount = 0;
+    let stampTemplateCount = 0;
+    let updateModelCount = 0;
+    let theTemplate;
+    slot.getContext().clear = () => { clearCount++; };
+    slot.getContext().stampTemplate = (eventHandler) => stampTemplateCount++;
+    slot.getContext().updateModel = (model) => updateModelCount++;
+    slot.getContext().setTemplate = (templatePrefix, templateName, template) => theTemplate = template;
+    slot.getContext().hasTemplate = (templateName) => { return !!theTemplate; };
+    // Set content to null - context is cleared.
+    await slot.setContent(null);
+    assert.isNull(slot._model);
+    assert.equal(0, doRenderCount);
+    assert.equal(1, clearCount);
+    assert.equal(0, stampTemplateCount);
+    assert.equal(0, updateModelCount);
 
-	// Slot isn't initialized.
-    slot.uninitialize();
-    assert.isFalse(slot.isAvailable());
+    // Set content with template: templates map is updated and slot is rendered.
+    assert.isFalse(slot.getContext().hasTemplate());
+    await slot.setContent({template: 'my template', templateName: 'default'});
+    assert.isNull(slot._model);
+    assert.equal('my template', theTemplate);
+    assert.equal(1, doRenderCount);
+    assert.equal(1, clearCount);
+    assert.equal(1, stampTemplateCount);
+    assert.equal(0, updateModelCount);
+
+    // Set content with template and model - template is overriden, model is set and slot is re-rendered.
+    await slot.setContent({template: 'my other template', templateName: 'default', model: {foo: 'bar'}});
+    assert.deepEqual({foo: 'bar'}, slot._model);
+    assert.isTrue(slot.getContext().hasTemplate());
+    assert.equal('my other template', theTemplate);
+    assert.equal(2, doRenderCount);
+    assert.equal(2, stampTemplateCount);
+    assert.equal(1, updateModelCount);
+
+    // Set content with only model - model is set and slot is re-rendered.
+    await slot.setContent({model: {foo: 'far'}});
+    assert.deepEqual({foo: 'far'}, slot._model);
+    assert.equal('my other template', theTemplate);
+    assert.equal(3, doRenderCount);
+    assert.equal(3, stampTemplateCount);
+    assert.equal(2, updateModelCount);
+
+    // set content to null - context is cleared, and model is set to null.
+    await slot.setContent(null);
+    assert.isNull(slot._model);
+    assert.equal('my other template', theTemplate);
+    assert.equal(3, doRenderCount);
   });
+  it('construct render request', function() {
+    let slot = createDomSlot();
+    slot._context = new MockDomContext();
+    // request template, if not available yet.
+    assert.deepEqual(['model', 'template'], slot.constructRenderRequest());
 
-  it('check exposed rendered views mapping', function() {
-    let slot = new DomSlot('slotid');
-
-    let v = new view.View(Bar.type, /* arc= */ null, "bar", "bar-id");
-    // Slot is initialized and not associated with a Particle.
-    slot.initialize(/* context= */{}, /* exposedView= */ v);
-    assert.isTrue(slot.isAvailable());
-
-    // Cannot associate particle with unmatching view with the Slot.
-    let particle = util.initParticleSpec('particle');
-    assert.throws(() => { slot.associateWithParticle(particle) });
-    assert.isTrue(slot.isAvailable());
-
-    // Successfully associate particle.
-    particle.renderMap.set(slot.slotid, v);
-    slot.associateWithParticle(particle)
-    assert.isFalse(slot.isAvailable());
+    // only request model, if template already found.
+    slot.setContent({template: 'dummy-template', templateName: 'default'}, {});
+    assert.deepEqual(['model'], slot.constructRenderRequest());
   });
 });

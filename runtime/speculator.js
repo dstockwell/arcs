@@ -7,37 +7,42 @@
  * subject to an additional IP rights grant found at
  * http://polymer.github.io/PATENTS.txt
  */
-"use strict";
+'use strict';
 
-let assert = require('assert');
-var tracing = require('tracelib');
-const scheduler = require('./scheduler.js');
-const Relevance = require('./relevance.js');
+import {Tracing} from '../tracelib/trace.js';
+import {Relevance} from './relevance.js';
 
-class Speculator {
+export class Speculator {
+  constructor() {
+    this._relevanceByHash = new Map();
+  }
 
-  speculate(arc, plan) {
-    var callTrace = tracing.start({cat: "speculator", name: "Speculator::speculate"});
-    var newArc = arc.cloneForSpeculativeExecution();
-    plan.instantiate(newArc);
-    callTrace.end();
-    let relevance = new Relevance();
+  async speculate(arc, plan, hash) {
+    if (this._relevanceByHash.has(hash)) {
+      let relevance = this._relevanceByHash.get(hash);
+      if (arc.isSameState(relevance.arcState)) {
+        return relevance;
+      }
+    }
+
+    let trace = Tracing.start({cat: 'speculator', name: 'Speculator::speculate'});
+    let newArc = await arc.cloneForSpeculativeExecution();
+    let relevance = new Relevance(arc.getStoresState());
+    let relevanceByHash = this._relevanceByHash;
     async function awaitCompletion() {
-      await scheduler.idle;
-      var messageCount = newArc.pec.messageCount;
+      await newArc.scheduler.idle;
+      let messageCount = newArc.pec.messageCount;
       relevance.apply(await newArc.pec.idle);
 
       if (newArc.pec.messageCount !== messageCount + 1)
         return awaitCompletion();
       else {
         relevance.newArc = newArc;
+        relevanceByHash.set(hash, relevance);
         return relevance;
       }
     }
 
-    return awaitCompletion();
-
+    return trace.endWith(newArc.instantiate(plan).then(a => awaitCompletion()));
   }
 }
-
-module.exports = Speculator;

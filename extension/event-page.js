@@ -5,52 +5,56 @@
 // subject to an additional IP rights grant found at
 // http://polymer.github.io/PATENTS.txt
 
-async function localExtractEntities(tab) {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.executeScript(tab.id, {file: 'page-extractor.js'}, result => {
-      if (chrome.runtime.lastError) {
-        // Can't access chrome: or other extension pages.
-        reject(chrome.runtime.lastError);
-      } else {
-        chrome.tabs.sendMessage(tab.id, {method: 'extractEntities', args: []}, null, resolve);
-        if (chrome.runtime.lastError) {
-          reject(chrome.runtime.lastError);
-        }
-      }
+/* global chrome, _prepareResults */
+
+chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
+  console.log('event page received message ' + request.method, request);
+  if (request.method == 'loadAllEntities') {
+    loadEntitiesFromTabs().then(results => {
+      console.log(
+          'event page finished loading entities from all tabs', results);
+      const response = _prepareResults(results);
+      console.log('event page prepared response', response);
+      sendResponse(response);
     });
-  });
-}
 
-async function remoteExtractEntities(tab) {
-  let pageEntity = {
-    '@type': 'http://schema.org/WebPage',
-    url: tab.url,
-  };
-  if (tab.title) {
-    pageEntity.name = tab.title;
-  }
-  if (tab.favIconUrl) {
-    pageEntity.image = tab.favIconUrl;
-  }
-  return [pageEntity];
-}
-
-async function extractEntities(tab) {
-  try {
-    if (tab.local) {
-      return await localExtractEntities(tab);
-    } else {
-      return await remoteExtractEntities(tab);
-    }
-  } catch (e) {
-    console.error(e);
-    return null;
-  }
-}
-
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.method == 'extractEntities') {
-    extractEntities(...request.args).then(x => sendResponse(x));
     return true;
   }
 });
+
+/**
+ * Load schema.org entities from all available tabs.
+ * Previous versions of this method (in new-tab.js) queried across devices,
+ * but I've removed that for simplicity.
+ */
+async function loadEntitiesFromTabs() {
+  let tabs = [];
+  let currentTabs =
+      await new Promise(resolve => chrome.tabs.query({}, resolve));
+  for (let tab of currentTabs) {
+    if (!/^https?/.test(tab.url)) {
+      continue;
+    }
+    tabs.push({
+      url: tab.url,
+      title: tab.title,
+      id: tab.id,
+    });
+  }
+
+  // Trigger entity extraction.
+  let tabEntityMap = new Map();
+  for (let tab of tabs) {
+    tabEntityMap.set(tab, loadEntitiesFromTab(tab));
+  }
+
+  return Promise.all(tabs.map(tab => tabEntityMap.get(tab)));
+}
+
+async function loadEntitiesFromTab(tab) {
+  return new Promise(
+      resolve =>
+          chrome.tabs.sendMessage(tab.id, {method: 'loadEntities'}, result => {
+            resolve({tab: tab, result: result});
+          }));
+}

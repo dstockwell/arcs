@@ -7,13 +7,12 @@
 // http://polymer.github.io/PATENTS.txt
 'use strict';
 
-const assert = require('assert');
-const Entity = require('./entity.js');
-const Type = require('./type.js');
-const Symbols = require('./symbols.js');
+import {Entity} from './entity.js';
+import {Type} from './type.js';
+import {Symbols} from './symbols.js';
 
 // TODO: Should relations normalized by another layer, or here?
-class Relation extends Entity {
+export class Relation extends Entity {
   constructor(...entities) {
     super();
     this.entities = entities;
@@ -22,9 +21,7 @@ class Relation extends Entity {
     return this.entities.map(entity => entity[Symbols.identifier].toLiteral());
   }
   static typeFor(relation) {
-    var result = new Type(relation.entities.map(entity => entity.constructor.type), relation.constructor);
+    let result = new Type(relation.entities.map(entity => entity.constructor.type), relation.constructor);
     return result;
   }
 }
-
-module.exports = Relation;

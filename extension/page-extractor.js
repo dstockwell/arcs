@@ -5,30 +5,38 @@
 // subject to an additional IP rights grant found at
 // http://polymer.github.io/PATENTS.txt
 
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.method == 'extractEntities') {
-    extractEntities(...request.args).then(sendResponse);
-    return true;
-  }
-});
-
-async function extractEntities() {
-  let microdata = extractMicrodata(document.documentElement);
+// Returns an array of Schema.org entities extracted from the given document
+// or an empty array if none were found.
+async function extractEntities(doc, windowLocation) {
+  let microdata = extractMicrodata(doc.documentElement);
   let results = [];
   if (microdata.length) {
     results.push(...microdata);
   }
-  let linkImage = document.querySelector('link[rel~="image_src"], link[rel~="icon"]')
+
+  let linkImage =
+      doc.querySelector('link[rel~="image_src"], link[rel~="icon"]');
   let pageEntity = {
     '@type': 'http://schema.org/WebPage',
-    name: document.title,
-    url: window.location.toString(),
+    name: doc.title,
+    url: windowLocation.toString()
   };
   if (linkImage && linkImage.href) {
     pageEntity.image = linkImage.href;
   }
   results.push(pageEntity);
+  results = results.concat(extractManifests());
   return results;
+}
+
+// This is out in a separate function, as extractMicrodata() may be replaced
+// with a library for https://github.com/PolymerLabs/arcs/issues/431
+function extractManifests() {
+  const manifestType = 'text/x-arcs-manifest';
+  return Array.prototype.map.call(
+      document.querySelectorAll('link[type="' + manifestType + '"]'), link => {
+        return {'@type': manifestType, url: link.href};
+      });
 }
 
 // Extracts entities embedded in microdata from the page.
@@ -56,7 +64,9 @@ function extractMicrodata(root) {
           return NodeFilter.FILTER_SKIP;
         }
         let parent = node.parentElement;
-        if (parent && parent != root && (parent.hasAttribute('itemscope') || parent.hasAttribute('itemtype'))) {
+        if (parent && parent != root &&
+            (parent.hasAttribute('itemscope') ||
+             parent.hasAttribute('itemtype'))) {
           // No need to look for props inside nested entities.
           return NodeFilter.FILTER_REJECT;
         }

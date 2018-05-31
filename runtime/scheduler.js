@@ -7,42 +7,56 @@
 // http://polymer.github.io/PATENTS.txt
 'use strict';
 
-const tracing = require("tracelib");
-const assert = require('assert');
+import {Tracing} from '../tracelib/trace.js';
+import {assert} from '../platform/assert-web.js';
 
-class Scheduler {
+export class Scheduler {
   constructor() {
     this.frameQueue = [];
     this.targetMap = new Map();
     this._finishNotifiers = [];
     this._idle = Promise.resolve();
     this._idleResolver = null;
+    this._idleCallbacks = [];
   }
 
-  enqueue(view, eventRecords) {
-    var trace = tracing.flow({cat: 'view', name: 'ViewBase::_fire flow'}).start();
+  registerIdleCallback(callback) { this._idleCallbacks.push(callback); }
+
+  unregisterIdleCallback(callback) {
+    let index = this._idleCallbacks.indexOf(callback);
+    assert(index >= 0, 'Cannot unregister nonexisted callback');
+    this._idleCallbacks.splice(index, 1);
+  }
+
+  unregisterArc(arc) {
+    this.targetMap.delete(arc);
+    this.frameQueue = this.frameQueue.filter(frame => frame.target !== arc);
+  }
+
+  enqueue(handle, eventRecords) {
+    let trace = Tracing.flow({cat: 'handle', name: 'StorageBase::_fire flow'}).start();
     if (this.frameQueue.length == 0 && eventRecords.length > 0)
       this._asyncProcess();
     if (!this._idleResolver) {
       this._idle = new Promise((resolve, reject) => this._idleResolver = resolve);
     }
-    for (var record of eventRecords) {
-      var frame = this.targetMap.get(record.target);
+    for (let record of eventRecords) {
+      let frame = this.targetMap.get(record.target);
       if (frame == undefined) {
-        frame = {target: record.target, views: new Map(), traces: []};
+        frame = {target: record.target, handles: new Map(), traces: []};
         this.frameQueue.push(frame);
         this.targetMap.set(record.target, frame);
       }
       frame.traces.push(trace);
-      var viewEvents = frame.views.get(view);
-      if (viewEvents == undefined) {
-        viewEvents = new Map();
-        frame.views.set(view, viewEvents);
+      let handleEvents = frame.handles.get(handle);
+      if (handleEvents == undefined) {
+        handleEvents = new Map();
+        frame.handles.set(handle, handleEvents);
       }
-      var kindEvents = viewEvents.get(record.kind);
+      let kindEvents = handleEvents.get(record.kind);
       if (kindEvents == undefined) {
         kindEvents = [];
-        viewEvents.set(record.kind, kindEvents);
+        handleEvents.set(record.kind, kindEvents);
       }
       kindEvents.push(record);
     }
@@ -58,7 +72,7 @@ class Scheduler {
 
   _asyncProcess() {
     Promise.resolve().then(() => {
-      assert(this.frameQueue.length > 0, "_asyncProcess should not be invoked with 0 length queue");
+      assert(this.frameQueue.length > 0, '_asyncProcess should not be invoked with 0 length queue');
       let frame = this.frameQueue.shift();
       this.targetMap.delete(frame.target);
       if (this.frameQueue.length > 0)
@@ -67,17 +81,18 @@ class Scheduler {
       if (this.frameQueue.length == 0) {
         this._idleResolver();
         this._idleResolver = null;
+        this._triggerIdleCallback();
       }
     });
   }
 
   _applyFrame(frame) {
-    var trace = tracing.start({cat: 'scheduler', name: 'Scheduler::_applyFrame', args: {target: frame.target ? frame.target.constructor.name : "NULL TARGET"}});
+    let trace = Tracing.start({cat: 'scheduler', name: 'Scheduler::_applyFrame', args: {target: frame.target ? frame.target.constructor.name : 'NULL TARGET'}});
 
-    var totalRecords = 0;
-    for (let [view, kinds] of frame.views.entries()) {
+    let totalRecords = 0;
+    for (let [handle, kinds] of frame.handles.entries()) {
       for (let [kind, records] of kinds.entries()) {
-        var record = records[records.length - 1];
+        let record = records[records.length - 1];
         record.callback(record.details);
       }
     }
@@ -86,6 +101,8 @@ class Scheduler {
 
     trace.end();
   }
-}
 
-module.exports = new Scheduler();
+  _triggerIdleCallback() {
+    this._idleCallbacks.forEach(callback => callback(/* pass info about what was updated */));
+  }
+}

@@ -6,16 +6,16 @@
 // subject to an additional IP rights grant found at
 // http://polymer.github.io/PATENTS.txt
 
-"use strict";
+'use strict';
 
-const InnerPec = require('./inner-PEC.js');
-const MessageChannel = require('./message-channel.js');
-const Loader = require('./loader.js');
+import {InnerPEC} from './inner-PEC.js';
+import {MessageChannel} from './message-channel.js';
+import {Loader} from './loader.js';
 
 // TODO: Make this generic so that it can also be used in-browser, or add a
 // separate in-process browser pec-factory.
-module.exports = function(id) {
-  var channel = new MessageChannel();
-  new InnerPec(channel.port1, `${id}:inner`, new Loader());
+export function FakePecFactory(id) {
+  let channel = new MessageChannel();
+  new InnerPEC(channel.port1, `${id}:inner`, new Loader());
   return channel.port2;
-};
+}

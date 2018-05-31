@@ -7,59 +7,86 @@
  * subject to an additional IP rights grant found at
  * http://polymer.github.io/PATENTS.txt
  */
-"use strict";
+'use strict';
 
-const assert = require('chai').assert;
-var Slot = require("../slot.js");
-let util = require('./test-util.js');
+import {assert} from './chai-web.js';
+import {Slot} from '../slot.js';
 
 describe('slot', function() {
-  it('associate and disassociate slot', function() {
-    let slot = new Slot('slotid');
-    assert.isFalse(slot.isAssociated());
+  it('setting context', async () => {
+    let slot = new Slot('dummy-consumeConn', 'dummy-arc');
+    let startRenderCount = 0;
+    let stopRenderCount = 0;
+    slot.startRenderCallback = () => { ++startRenderCount; };
+    slot.stopRenderCallback = () => { ++stopRenderCount; };
 
-    // cannot disassociate not associated slot.
-    assert.throws(() => { slot.disassociateParticle() });
+    // context was null, set to null: nothing happens.
+    await slot.updateContext(null);
+    assert.equal(startRenderCount, 0);
+    assert.equal(stopRenderCount, 0);
 
-    // associate slot.
-    let particleSpec = util.initParticleSpec('particle');
-    slot.associateWithParticle(particleSpec);
-    assert.isTrue(slot.isAssociated());
-    // cannot associate slot that is already associated.
-    assert.throws(() => { slot.associateWithParticle(particleSpec); });
+    // context was null, set to non-null: startRender is called.
+    await slot.updateContext('dummy-context');
+    assert.equal(startRenderCount, 1);
+    assert.equal(stopRenderCount, 0);
+
+    // context was not null, set to another non-null context: nothing happens.
+    assert.isFalse(slot.isSameContext('other-context'));
+    await slot.updateContext('other-context');
+    assert.equal(startRenderCount, 1);
+    assert.equal(stopRenderCount, 0);
+
+    // context was not null, set to null: stopRender is called.
+    await slot.updateContext(null);
+    assert.equal(startRenderCount, 1);
+    assert.equal(stopRenderCount, 1);
   });
+  it('hosted slots', async () => {
+    assert(true);
+    let transformationSlotName = 'myTransformationSlotName';
+    let slot = new Slot({particle: {name: 'myTransformationParticle'}, name: transformationSlotName}, 'dummy-arc');
+    let hostedSlotId = 'id-0';
+    let hostedParticleName = 'particle-0';
+    let hostedSlotName = 'slot-0';
+    let hostedParticle = {name: hostedParticleName};
 
-  it('add and provide pending requests', function() {
-    let slot = new Slot('slotid');
-    assert.isFalse(slot.isAssociated());
+    // Add hosted slot and verify it exists.
+    assert.isUndefined(slot.getHostedSlot(hostedSlotId));
+    slot.addHostedSlot(hostedSlotId, hostedParticleName, hostedSlotName);
+    assert.isDefined(slot.getHostedSlot(hostedSlotId));
 
-    let count = 0;
-    let handler = () => { count++; };
+    // Init hosted slot.
+    assert.isUndefined(slot.findHostedSlot(hostedParticle, hostedSlotName));
+    slot.initHostedSlot(hostedSlotId, hostedParticle);
+    assert.isDefined(slot.findHostedSlot(hostedParticle, hostedSlotName));
 
-    slot.addPendingRequest(util.initParticleSpec('particle1'), handler, {});
-    // Add request for the same particle, so it is ignored.
-    slot.addPendingRequest(util.initParticleSpec('particle1'), handler, {});
-    slot.addPendingRequest(util.initParticleSpec('particle2'), handler, {});
-    slot.providePendingSlot();
-    let expectedCount = 0;
-    assert.equal(++expectedCount, count);
-    slot.providePendingSlot();
-    assert.equal(++expectedCount, count);
-    // Slot has no pending requests, providing it does nothing.
-    slot.providePendingSlot();
-    assert.equal(expectedCount, count);
+    let startRenderSlotNames = new Set();
+    let stopRenderSlotNames = new Set();
+    // Start render hosted slots
+    slot.startRenderCallback = ({particle, slotName, contentTypes}) => { startRenderSlotNames.add(slotName); };
+    slot.stopRenderCallback = ({particle, slotName}) => { stopRenderSlotNames.add(slotName); };
+    await slot.updateContext('dummy-context');
+    assert.equal(2, startRenderSlotNames.size);
+    assert.isTrue(startRenderSlotNames.has(transformationSlotName));
+    assert.isTrue(startRenderSlotNames.has(hostedSlotName));
+    startRenderSlotNames.clear();
 
-    // Cannot provide not associated slot.
-    slot.associateWithParticle(util.initParticleSpec('particle'));
-    assert.throws(() => { slot.providePendingSlot(); });
-    assert.equal(expectedCount, count);
-  });
-  it('remove pending request', function() {
-    let slot = new Slot('slotid');
-    let count = 0;
-    let reject = () => { count++; };
-    slot.addPendingRequest(util.initParticleSpec('particle1'), {}, reject);
-    slot.removePendingRequest(util.initParticleSpec('particle1'));
-    assert.equal(1, count);
+    // Add another hosted slot and have startRender trigger immediately.
+    let otherHostedSlotId = 'id-1';
+    let otherHostedParticleName = 'particle-1';
+    let otherHostedSlotName = 'slot-2';
+    let otherHostedParticle = {name: otherHostedParticleName};
+    slot.addHostedSlot(otherHostedSlotId, otherHostedParticleName, otherHostedSlotName);
+    assert.isDefined(slot.getHostedSlot(otherHostedSlotId));
+    slot.initHostedSlot(otherHostedSlotId, otherHostedParticle);
+    assert.equal(1, startRenderSlotNames.size);
+    assert.isTrue(startRenderSlotNames.has(otherHostedSlotName));
+
+    // Trigger StopRender for both transformation and hosted slots.
+    await slot.updateContext(null);
+    assert.equal(3, stopRenderSlotNames.size);
+    assert.isTrue(stopRenderSlotNames.has(transformationSlotName));
+    assert.isTrue(stopRenderSlotNames.has(hostedSlotName));
+    assert.isTrue(stopRenderSlotNames.has(otherHostedSlotName));
   });
 });
